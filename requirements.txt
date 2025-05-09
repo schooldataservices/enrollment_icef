@@ -1,0 +1,8 @@
+gspread 
+pandas 
+gspread-dataframe 
+oauth2client 
+notebook
+google-cloud-storage
+google-cloud-bigquery
+db-dtypes
