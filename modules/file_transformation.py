@@ -18,11 +18,14 @@ def seperate_apps_registrations(sm):
 
 def get_returning_students(client):
     query = '''
-    SELECT * FROM `icef-437920.powerschool.intent_to_return_results`
+    SELECT itr.*
+    FROM `icef-437920.views.student_to_teacher` stt
+    INNER JOIN `icef-437920.powerschool.intent_to_return_results` itr
+    ON stt.student_number = itr.student_id;
     '''
     df = client.query(query).to_dataframe()
 
-    df.loc[df['student_returning'] == 'Yes']
+    df = df.loc[df['student_returning'] == 'Yes']
 
     df['new_or_returning'] = 'returning'
     df.drop(columns=['student_returning'], inplace=True)
@@ -49,6 +52,29 @@ def get_new_students(client):
     sm['source'] = '' #can check new columns brought in from the query
     sm['transitioning_to_icef_middle_or_hs'] = '' #check source bright in from query to see if coming from ICEF elem
 
+    #Chagne grade values to match what is coming from Google Sheets. 
+    grade_mapping = {
+    'TK': 'TK',
+    'K': 'Kindergarten',
+    '1': '1st Grade',
+    '2': '2nd Grade',
+    '3': '3rd Grade',
+    '4': '4th Grade',
+    '5': '5th Grade',
+    '6': '6th Grade',
+    '7': '7th Grade',
+    '8': '8th Grade',
+    '9': '9th Grade',
+    '10': '10th Grade',
+    '11': '11th Grade',
+    '12': '12th Grade'
+     }
+
+    # Replace the values in the 'grade' column using the mapping
+    sm['grade'] = sm['grade'].replace(grade_mapping)
+
+    sm['student_id'] = None
+    
 
     return(sm)
 
@@ -73,23 +99,116 @@ def mark_transitioning_students(df):
     return df
 
 
-def assimilate_new_and_returning(new, returning):
+def create_incoming_students(new, returning):
     new['program_id'] = new['program_id'].fillna(0)
     new['program_id'] = new['program_id'].astype(int)
     program_id_school_dict = returning[['program_id', 'school']].drop_duplicates().set_index('program_id')['school'].to_dict()
-    program_id_budget_dict = returning[['program_id', 'budgeted_enrollment']].drop_duplicates().set_index('program_id')['budgeted_enrollment'].to_dict()
+    # program_id_budget_dict = returning[['program_id', 'budgeted_enrollment']].drop_duplicates().set_index('program_id')['budgeted_enrollment'].to_dict()
 
 
     new['school'] = new['program_id'].map(program_id_school_dict)
-    new['budgeted_enrollment'] = new['program_id'].map(program_id_budget_dict)
+    # new['budgeted_enrollment'] = new['program_id'].map(program_id_budget_dict)
     new = mark_transitioning_students(new)
 
 
-    new = new[['student_id', 'student_name', 'school', 'grade', 'source', 'transitioning_to_icef_middle_or_hs', 'program_id', 'budgeted_enrollment', 'new_or_returning']]
+    new = new[['student_id', 'student_name', 'school', 'grade', 'source', 'transitioning_to_icef_middle_or_hs', 'program_id', 'new_or_returning']]
 
+   
     df = pd.concat([new, returning])
     df = df.reset_index(drop=True)
 
+    df = df.drop(columns=['budgeted_enrollment', 'source']).reset_index(drop=True)
+
+
+    grade_to_int_mapping = {
+    'TK': -1,
+    'Kindergarten': 0,
+    '1st Grade': 1,
+    '2nd Grade': 2,
+    '3rd Grade': 3,
+    '4th Grade': 4,
+    '5th Grade': 5,
+    '6th Grade': 6,
+    '7th Grade': 7,
+    '8th Grade': 8,
+    '9th Grade': 9,
+    '10th Grade': 10,
+    '11th Grade': 11,
+    '12th Grade': 12
+    }
+
+    df['grade'] = df['grade'].map(grade_to_int_mapping)
+    df['grade']  = df['grade'] + 1
+
+    program_school_mapping = {
+    10396: "IVMA",
+    10393: "IILA",
+    10392: "IIECA",
+    10394: "VPES",
+    12239: "IVEA",
+    10007: "VPMS",
+    10395: "VPHS"
+    }
+
+    df['school'] = df['program_id'].map(program_school_mapping)
+
     return(df)
+
+def create_budgeted_enrollment(df, client):
+    unique_students_by_school_grade = df.groupby(['program_id', 'school', 'grade'])['student_id'].nunique().reset_index()
+    unique_students_by_school_grade = unique_students_by_school_grade.rename(columns={'student_id': 'total_enrollment'})
+
+    query = '''
+    SELECT 
+        CASE 
+            WHEN grade = 'Kinder.' THEN 'Kindergarten'
+            ELSE grade
+        END AS grade,
+        budgeted_enrollment,
+        program_id
+    FROM `icef-437920.powerschool.budgeted_enrollment`
+    '''
+    budgeted_enrollment = client.query(query).to_dataframe()
+
+    grade_to_int_mapping = {
+    'TK': -1,
+    'Kindergarten': 0,
+    '1st Grade': 1,
+    '2nd Grade': 2,
+    '3rd Grade': 3,
+    '4th Grade': 4,
+    '5th Grade': 5,
+    '6th Grade': 6,
+    '7th Grade': 7,
+    '8th Grade': 8,
+    '9th Grade': 9,
+    '10th Grade': 10,
+    '11th Grade': 11,
+    '12th Grade': 12
+    }
+
+    budgeted_enrollment['grade'] = budgeted_enrollment['grade'].map(grade_to_int_mapping)
+
+    budgeted_enrollment = pd.merge(unique_students_by_school_grade, budgeted_enrollment, how='left', on=['grade', 'program_id'])
+
+    budgeted_enrollment['enrollment_capacity'] = (budgeted_enrollment['total_enrollment'] / 
+                                                budgeted_enrollment['budgeted_enrollment']).round(2)
+
+    budgeted_enrollment['seats_available'] =  budgeted_enrollment['budgeted_enrollment'] - budgeted_enrollment['total_enrollment'] 
+
+    program_school_mapping = {
+    10396: "IVMA",
+    10393: "IILA",
+    10392: "IIECA",
+    10394: "VPES",
+    12239: "IVEA",
+    10007: "VPMS",
+    10395: "VPHS"
+    }
+
+    df['school'] = df['program_id'].map(program_school_mapping)
+
+    return(budgeted_enrollment)
+
 
 

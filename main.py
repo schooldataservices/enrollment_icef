@@ -2,16 +2,26 @@ from google.cloud import bigquery
 from modules.bq import *
 from modules.file_transformation import *
 import os
+import sys
 
-os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '/home/sam/icef-437920.json'
+logging.basicConfig(
+    level=logging.INFO,  # Adjust as needed (e.g., DEBUG, WARNING)
+    format="%(asctime)s - %(message)s",  # Log format
+    datefmt="%d-%b-%y %H:%M:%S",  # Date format
+    handlers=[
+        logging.StreamHandler(sys.stdout)  # Direct logs to stdout
+    ],
+    force=True  # Ensures existing handlers are replaced
+)
+
+os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '/app/icef-437920.json'
 client = bigquery.Client(project='icef-437920')
 
 
-returning = get_returning_students(client)
-new = get_new_students(client)
-df = assimilate_new_and_returning(new, returning) #need to add demographic info from PS in a merge. New students demographic info is not available through SM. 
+returning = get_returning_students(client) #Comes from Google Sheets
+new = get_new_students(client) #Comes from School Mint
+incoming = create_incoming_students(new, returning) #need to add demographic info from PS in a merge. New students demographic info is not available through SM. 
+budgeted_enrollment = create_budgeted_enrollment(incoming, client)
 
-#google sheets scrape needs to be iterated to include all other sheets, becasue that breaks down budgeted enrollment by grade. 
-#The current budgeted enrollment got appeneded to intent to return. But might just need to be a seperate table.
-
-#Also must normalize the grades in teh file_transofmration. Can not have "second" and '2nd' in the same column.
+send_to_gcs('powerschoolbucket-icefschools-1', save_path='', frame=incoming, frame_name='incoming_students.csv')
+send_to_gcs('powerschoolbucket-icefschools-1', save_path='', frame=budgeted_enrollment, frame_name='budgeted_enrollment.csv')
