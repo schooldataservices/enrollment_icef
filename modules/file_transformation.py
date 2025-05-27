@@ -25,7 +25,7 @@ def get_returning_students(client):
     '''
     df = client.query(query).to_dataframe()
 
-    df = df.loc[df['student_returning'] == 'Yes']
+    df = df.loc[(df['student_returning'] == 'Yes') | (df['student_returning'] == 'Maybe')]
 
     df['new_or_returning'] = 'returning'
     df.drop(columns=['student_returning'], inplace=True)
@@ -43,7 +43,7 @@ def get_new_students(client):
     sm = sm[['fname', 'lname', 'student_id', 'id', 'student_annual_id', 'r_school_id', 'r_application_id', 'r_updated_at', 'r_withdrawn', 'r_status', 'r_type', 'r_sis_export_status', 'grade', 'program_id', 'school_name_previous', 'school_code_previous', 'school_name_registering', 'school_code_registering']]
 
     sm = sm.loc[(sm['r_type'] == 'enroll') & 
-        (sm['r_withdrawn'] == 1) &
+        (sm['r_withdrawn'] == 0) &
         (sm['r_sis_export_status'] == 'Succeeded'), :]
     
     sm['student_name'] = sm['lname'] + ', ' + sm['fname']
@@ -140,6 +140,9 @@ def create_incoming_students(new, returning):
     df['grade'] = df['grade'].map(grade_to_int_mapping)
     df['grade']  = df['grade'] + 1
 
+    #Drop grade 13
+    df = df.loc[df['grade'] < 13].reset_index(drop=True)
+
     program_school_mapping = {
     10396: "IVMA",
     10393: "IILA",
@@ -154,61 +157,69 @@ def create_incoming_students(new, returning):
 
     return(df)
 
+def create_budgeted_enrollment_by_grade(client):
+
+        query = '''
+            SELECT
+                program_id,
+                grade,
+                COUNT(*) AS budget_enrollment_by_grade
+            FROM
+                `icef-437920.powerschool.intent_to_return_results`
+            GROUP BY
+                program_id,
+                grade
+            ORDER BY
+                program_id,
+                grade
+            '''
+
+        budgeted_enrollment = client.query(query).to_dataframe()
+
+        grade_to_int_mapping = {
+        'TK': -1,
+        'Kindergarten': 0,
+        '1st Grade': 1,
+        '2nd Grade': 2,
+        '3rd Grade': 3,
+        '4th Grade': 4,
+        '5th Grade': 5,
+        '6th Grade': 6,
+        '7th Grade': 7,
+        '8th Grade': 8,
+        '9th Grade': 9,
+        '10th Grade': 10,
+        '11th Grade': 11,
+        '12th Grade': 12
+        }
+
+        budgeted_enrollment['grade'] = budgeted_enrollment['grade'].map(grade_to_int_mapping)
+
+        return(budgeted_enrollment)
+
+
+#The budgeted_enrollment table columns are brought in from intent to return. This is generated in google sheets hookups. 
+#Therefore those are the budgeted enrollment numbers that should be used
 def create_budgeted_enrollment(df, client):
     unique_students_by_school_grade = df.groupby(['program_id', 'school', 'grade'])['student_id'].nunique().reset_index()
     unique_students_by_school_grade = unique_students_by_school_grade.rename(columns={'student_id': 'total_enrollment'})
+  
+    budgeted_enrollment_by_grade = create_budgeted_enrollment_by_grade(client) #Coming from intent to return
 
-    query = '''
-    SELECT 
-        CASE 
-            WHEN grade = 'Kinder.' THEN 'Kindergarten'
-            ELSE grade
-        END AS grade,
-        budgeted_enrollment,
-        program_id
-    FROM `icef-437920.powerschool.budgeted_enrollment`
-    '''
-    budgeted_enrollment = client.query(query).to_dataframe()
+    budgeted_enrollment = pd.merge(unique_students_by_school_grade, budgeted_enrollment_by_grade, how='left', on=['grade', 'program_id'])
 
-    grade_to_int_mapping = {
-    'TK': -1,
-    'Kindergarten': 0,
-    '1st Grade': 1,
-    '2nd Grade': 2,
-    '3rd Grade': 3,
-    '4th Grade': 4,
-    '5th Grade': 5,
-    '6th Grade': 6,
-    '7th Grade': 7,
-    '8th Grade': 8,
-    '9th Grade': 9,
-    '10th Grade': 10,
-    '11th Grade': 11,
-    '12th Grade': 12
-    }
-
-    budgeted_enrollment['grade'] = budgeted_enrollment['grade'].map(grade_to_int_mapping)
-
-    budgeted_enrollment = pd.merge(unique_students_by_school_grade, budgeted_enrollment, how='left', on=['grade', 'program_id'])
+    #Drop rows where budgeted_enrollment is NaN. For grades where students can not return. i.e. 12 for High School
+    budgeted_enrollment = budgeted_enrollment.loc[~budgeted_enrollment['budget_enrollment_by_grade'].isna()].reset_index(drop=True) 
 
     budgeted_enrollment['enrollment_capacity'] = (budgeted_enrollment['total_enrollment'] / 
-                                                budgeted_enrollment['budgeted_enrollment']).round(2)
+                                            budgeted_enrollment['budget_enrollment_by_grade']).round(2)
 
-    budgeted_enrollment['seats_available'] =  budgeted_enrollment['budgeted_enrollment'] - budgeted_enrollment['total_enrollment'] 
+    budgeted_enrollment['seats_available'] =  budgeted_enrollment['budget_enrollment_by_grade'] - budgeted_enrollment['total_enrollment']
 
-    program_school_mapping = {
-    10396: "IVMA",
-    10393: "IILA",
-    10392: "IIECA",
-    10394: "VPES",
-    12239: "IVEA",
-    10007: "VPMS",
-    10395: "VPHS"
-    }
-
-    df['school'] = df['program_id'].map(program_school_mapping)
 
     return(budgeted_enrollment)
 
 
-
+#CHECK
+# temp = intent_to_return.loc[intent_to_return['School'] == 'View Park High School']
+# temp.groupby(['Grade', 'Student Returning']).count()
