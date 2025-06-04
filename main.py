@@ -23,5 +23,5 @@ new = get_new_students(client) #Comes from School Mint
 incoming = create_incoming_students(new, returning) #need to add demographic info from PS in a merge. New students demographic info is not available through SM. 
 budgeted_enrollment = create_budgeted_enrollment(incoming, client)
 
-send_to_gcs('powerschoolbucket-icefschools-1', save_path='', frame=incoming, frame_name='incoming_students.csv')
-send_to_gcs('powerschoolbucket-icefschools-1', save_path='', frame=budgeted_enrollment, frame_name='budgeted_enrollment.csv')
+send_to_gcs('enrollmentbucket-icefschools-1', save_path='', frame=incoming, frame_name='incoming_students.csv')
+send_to_gcs('enrollmentbucket-icefschools-1', save_path='', frame=budgeted_enrollment, frame_name='budgeted_enrollment_capacity.csv')
