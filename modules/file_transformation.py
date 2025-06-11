@@ -291,6 +291,9 @@ def create_budgeted_enrollment(df, client):
     budgeted_enrollment['new'] = budgeted_enrollment['new'].astype(int)
     budgeted_enrollment['returning'] = budgeted_enrollment['returning'].astype(int)
 
+    total_students = budgeted_enrollment.loc[budgeted_enrollment['grade'] == 'total']['new'].sum()
+    logging.info(f'Here is the amount of total students: {total_students}')
+
     return budgeted_enrollment
 
 
