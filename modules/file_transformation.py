@@ -30,14 +30,23 @@ def get_returning_students(client):
     '''
     df = client.query(query).to_dataframe()
 
+
     logging.info(f'Student returning info:\n {(df['student_returning'].value_counts())}')
 
-    df = df.loc[(df['student_returning'] == 'Yes') | (df['student_returning'] == 'Maybe')]
+    df = df[
+    (df['student_returning'] == 'Yes') |
+    (
+        (df['student_returning'] == 'Maybe') &
+        (df['school_attending'].notna()) &
+        (df['school_attending'] != 'TBD')
+    )
+]
 
     df['new_or_returning'] = 'returning'
 
     grade_to_int_mapping = {
     'TK': -1,
+    'K': 1,
     'Kindergarten': 0,
     '1st Grade': 1,
     '2nd Grade': 2,
@@ -128,8 +137,7 @@ def get_new_students(client):
     sm = sm[['student_id', 'student_name', 'school_name', 'grade', 'new_or_returning']]
     sm = sm.rename(columns={'school_name': 'school'})
 
-    sm['grade'] = sm['grade'].replace({'TK': -1,
-                                   'Kindergarten': 0})
+    sm['grade'] = sm['grade'].replace({'TK': -1, 'K': 0})
     
     new_students_program_ids = {'ICEF Inglewood Elementary Charter Academy': 10392,
                             'ICEF Innovation Los Angeles Charter School': 10393,
@@ -180,76 +188,115 @@ def get_new_students(client):
 
 def create_incoming_students(new, returning):
 
-    #Budgeted enrollment is no longer comign from intent to return, now it is coming from the other Google Sheet scrape. 
-    # program_id_budget_dict = returning[['program_id', 'budgeted_enrollment']].drop_duplicates().set_index('program_id')['budgeted_enrollment'].to_dict()
-    # new['budgeted_enrollment'] = new['program_id'].map(program_id_budget_dict)
-       
     df = pd.concat([new, returning])
     df = df.reset_index(drop=True)
 
     return(df)
 
-def create_budgeted_enrollment_by_grade(client):
 
-        query = '''
-            SELECT
-                program_id,
-                grade,
-                COUNT(*) AS budget_enrollment_by_grade
-            FROM
-                `icef-437920.enrollment.intent_to_return_results`
-            GROUP BY
-                program_id,
-                grade
-            ORDER BY
-                program_id,
-                grade
-            '''
 
-        budgeted_enrollment = client.query(query).to_dataframe()
+def add_total_rows_by_program(df):
+    """
+    Adds a 'total' row for each program_id in the DataFrame by summing the
+    'new', 'returning', 'total_enrollment', and 'budgeted_enrollment' columns.
 
-        grade_to_int_mapping = {
-        'TK': -1,
-        'Kindergarten': 0,
-        '1st Grade': 1,
-        '2nd Grade': 2,
-        '3rd Grade': 3,
-        '4th Grade': 4,
-        '5th Grade': 5,
-        '6th Grade': 6,
-        '7th Grade': 7,
-        '8th Grade': 8,
-        '9th Grade': 9,
-        '10th Grade': 10,
-        '11th Grade': 11,
-        '12th Grade': 12
-        }
+    The 'school' column in the total rows will contain the corresponding school acronym.
 
-        budgeted_enrollment['grade'] = budgeted_enrollment['grade'].map(grade_to_int_mapping)
+    Parameters:
+    - df (pd.DataFrame): The input DataFrame containing at least the following columns:
+        'program_id', 'school', 'grade', 'new', 'returning', 'total_enrollment', 'budgeted_enrollment'
 
-        return(budgeted_enrollment)
+    Returns:
+    - pd.DataFrame: A new DataFrame with total rows appended.
+    """
+
+    # Group and sum numeric columns
+    totals = (
+        df.groupby("program_id")[["new", "returning", "total_enrollment", "budgeted_enrollment"]]
+        .sum()
+        .reset_index()
+    )
+
+    # Get first school acronym per program_id
+    school_map = df.groupby("program_id")["school"].first().reset_index()
+
+    # Merge to get the school acronym for totals
+    totals = totals.merge(school_map, on="program_id", how="left")
+
+    # Add the grade column as 'total'
+    totals["grade"] = "total"
+
+    # Reorder columns to match original df
+    totals = totals[df.columns]
+
+    # Append totals to original df
+    combined = pd.concat([df, totals], ignore_index=True)
+
+    # Sort so totals appear after each program_id's grades
+    combined = combined.sort_values(
+        by=["program_id", "grade"],
+        key=lambda col: col.astype(str)
+    ).reset_index(drop=True)
+
+    return combined
 
 
 #The budgeted_enrollment table columns are brought in from intent to return. This is generated in google sheets hookups. 
 #Therefore those are the budgeted enrollment numbers that should be used
 def create_budgeted_enrollment(df, client):
-    unique_students_by_school_grade = df.groupby(['program_id', 'school', 'grade'])['student_id'].nunique().reset_index()
+
+    df['grade'] = df['grade'].astype(str)
+
+    #create unique students by school in order to get the total enrollment by school and grade. 
+    unique_students_by_school_grade = df.groupby(['program_id', 'school', 'grade', 'new_or_returning'])['student_id'].nunique().reset_index()
     unique_students_by_school_grade = unique_students_by_school_grade.rename(columns={'student_id': 'total_enrollment'})
-  
-    budgeted_enrollment_by_grade = create_budgeted_enrollment_by_grade(client) #Coming from intent to return
 
-    budgeted_enrollment = pd.merge(unique_students_by_school_grade, budgeted_enrollment_by_grade, how='left', on=['grade', 'program_id'])
+    unique_students_by_school_grade = unique_students_by_school_grade.pivot_table(
+    index=["program_id", "school", "grade"],
+    columns="new_or_returning",
+    values="total_enrollment",
+    fill_value=0  # Optional: fills NaN with 0
+    ).reset_index()
 
-    #Drop rows where budgeted_enrollment is NaN. For grades where students can not return. i.e. 12 for High School
-    budgeted_enrollment = budgeted_enrollment.loc[~budgeted_enrollment['budget_enrollment_by_grade'].isna()].reset_index(drop=True) 
+    unique_students_by_school_grade.columns.name = None
+
+
+    unique_students_by_school_grade['total_enrollment'] = unique_students_by_school_grade['new'] + unique_students_by_school_grade['returning'] 
+
+    query = '''
+        SELECT
+            *
+        FROM
+        `icef-437920.enrollment.budgeted_enrollment`
+        '''
+
+    budgeted_enrollment = client.query(query).to_dataframe()
+    budgeted_enrollment["grade"] = budgeted_enrollment["grade"].apply(lambda x: "total" if pd.isna(x) else str(int(x)))
+
+    budgeted_enrollment = pd.merge( unique_students_by_school_grade, budgeted_enrollment, on=['program_id', 'grade'], how='left')
+    budgeted_enrollment = budgeted_enrollment.drop(columns=['school_y'])
+    budgeted_enrollment = budgeted_enrollment.rename(columns={'school_x': 'school'})
+
+
+    # budgeted_enrollment = budgeted_enrollment.loc[~budgeted_enrollment['budgeted_enrollment'].isna()].reset_index(drop=True) 
+    budgeted_enrollment['budgeted_enrollment'] = budgeted_enrollment['budgeted_enrollment'].fillna(0)
+
+    budgeted_enrollment = add_total_rows_by_program(budgeted_enrollment)
 
     budgeted_enrollment['enrollment_capacity'] = (budgeted_enrollment['total_enrollment'] / 
-                                            budgeted_enrollment['budget_enrollment_by_grade']).round(2)
+                                            budgeted_enrollment['budgeted_enrollment']).round(2)
+    
+    budgeted_enrollment['seats_available'] =  budgeted_enrollment['budgeted_enrollment'] - budgeted_enrollment['total_enrollment']
+    budgeted_enrollment['total_enrollment'] = budgeted_enrollment['total_enrollment'].astype(int)
+    budgeted_enrollment['new'] = budgeted_enrollment['new'].astype(int)
+    budgeted_enrollment['returning'] = budgeted_enrollment['returning'].astype(int)
 
-    budgeted_enrollment['seats_available'] =  budgeted_enrollment['budget_enrollment_by_grade'] - budgeted_enrollment['total_enrollment']
+    return budgeted_enrollment
 
 
-    return(budgeted_enrollment)
+
+
+    # return(budgeted_enrollment)
 
 
 #CHECK
